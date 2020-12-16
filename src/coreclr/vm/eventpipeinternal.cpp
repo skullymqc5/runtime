@@ -2,8 +2,13 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 #include "common.h"
-#include "eventpipeadapter.h"
+#include "eventpipe.h"
+#include "eventpipeconfiguration.h"
+#include "eventpipeeventinstance.h"
 #include "eventpipeinternal.h"
+#include "eventpipeprovider.h"
+#include "eventpipesession.h"
+#include "eventpipesessionprovider.h"
 
 #ifdef TARGET_UNIX
 #include "pal.h"
@@ -15,7 +20,7 @@ UINT64 QCALLTYPE EventPipeInternal::Enable(
     __in_z LPCWSTR outputFile,
     EventPipeSerializationFormat format,
     UINT32 circularBufferSizeInMB,
-    /* COR_PRF_EVENTPIPE_PROVIDER_CONFIG */ LPCVOID pProviders,
+    EventPipeProviderConfiguration *pProviders,
     UINT32 numProviders)
 {
     QCALL_CONTRACT;
@@ -24,7 +29,7 @@ UINT64 QCALLTYPE EventPipeInternal::Enable(
 
     // Invalid input!
     if (circularBufferSizeInMB == 0 ||
-        format >= EP_SERIALIZATION_FORMAT_COUNT ||
+        format >= EventPipeSerializationFormat::Count ||
         numProviders == 0 ||
         pProviders == nullptr)
     {
@@ -33,17 +38,16 @@ UINT64 QCALLTYPE EventPipeInternal::Enable(
 
     BEGIN_QCALL;
     {
-        EventPipeProviderConfigurationAdapter configAdapter(reinterpret_cast<const COR_PRF_EVENTPIPE_PROVIDER_CONFIG *>(pProviders), numProviders);
-        sessionID = EventPipeAdapter::Enable(
+        sessionID = EventPipe::Enable(
             outputFile,
             circularBufferSizeInMB,
-            configAdapter,
-            outputFile != NULL ? EP_SESSION_TYPE_FILE : EP_SESSION_TYPE_LISTENER,
+            pProviders,
+            numProviders,
+            outputFile != NULL ? EventPipeSessionType::File : EventPipeSessionType::Listener,
             format,
             true,
-            nullptr,
             nullptr);
-        EventPipeAdapter::StartStreaming(sessionID);
+        EventPipe::StartStreaming(sessionID);
     }
     END_QCALL;
 
@@ -55,7 +59,7 @@ void QCALLTYPE EventPipeInternal::Disable(UINT64 sessionID)
     QCALL_CONTRACT;
 
     BEGIN_QCALL;
-    EventPipeAdapter::Disable(sessionID);
+    EventPipe::Disable(sessionID);
     END_QCALL;
 }
 
@@ -68,11 +72,11 @@ bool QCALLTYPE EventPipeInternal::GetSessionInfo(UINT64 sessionID, EventPipeSess
 
     if (pSessionInfo != NULL)
     {
-        EventPipeSession *pSession = EventPipeAdapter::GetSession(sessionID);
+        EventPipeSession *pSession = EventPipe::GetSession(sessionID);
         if (pSession != NULL)
         {
-            pSessionInfo->StartTimeAsUTCFileTime = EventPipeAdapter::GetSessionStartTime(pSession);
-            pSessionInfo->StartTimeStamp.QuadPart = EventPipeAdapter::GetSessionStartTimestamp(pSession);
+            pSessionInfo->StartTimeAsUTCFileTime = pSession->GetStartTime();
+            pSessionInfo->StartTimeStamp.QuadPart = pSession->GetStartTimeStamp().QuadPart;
             QueryPerformanceFrequency(&pSessionInfo->TimeStampFrequency);
             retVal = true;
         }
@@ -92,7 +96,7 @@ INT_PTR QCALLTYPE EventPipeInternal::CreateProvider(
 
     BEGIN_QCALL;
 
-    pProvider = EventPipeAdapter::CreateProvider(providerName, pCallbackFunc);
+    pProvider = EventPipe::CreateProvider(providerName, pCallbackFunc, NULL);
 
     END_QCALL;
 
@@ -116,7 +120,7 @@ INT_PTR QCALLTYPE EventPipeInternal::DefineEvent(
 
     _ASSERTE(provHandle != NULL);
     EventPipeProvider *pProvider = reinterpret_cast<EventPipeProvider *>(provHandle);
-    pEvent = EventPipeAdapter::AddEvent(pProvider, eventID, keywords, eventVersion, (EventPipeEventLevel)level, /* needStack = */ true, (BYTE *)pMetadata, metadataLength);
+    pEvent = pProvider->AddEvent(eventID, keywords, eventVersion, (EventPipeEventLevel)level, /* needStack = */ true, (BYTE *)pMetadata, metadataLength);
     _ASSERTE(pEvent != NULL);
 
     END_QCALL;
@@ -132,7 +136,7 @@ INT_PTR QCALLTYPE EventPipeInternal::GetProvider(__in_z LPCWSTR providerName)
 
     BEGIN_QCALL;
 
-    pProvider = EventPipeAdapter::GetProvider(providerName);
+    pProvider = EventPipe::GetProvider(providerName);
 
     END_QCALL;
 
@@ -147,7 +151,7 @@ void QCALLTYPE EventPipeInternal::DeleteProvider(INT_PTR provHandle)
     if (provHandle != NULL)
     {
         EventPipeProvider *pProvider = reinterpret_cast<EventPipeProvider *>(provHandle);
-        EventPipeAdapter::DeleteProvider(pProvider);
+        EventPipe::DeleteProvider(pProvider);
     }
 
     END_QCALL;
@@ -223,7 +227,7 @@ void QCALLTYPE EventPipeInternal::WriteEventData(
 
     _ASSERTE(eventHandle != NULL);
     EventPipeEvent *pEvent = reinterpret_cast<EventPipeEvent *>(eventHandle);
-    EventPipeAdapter::WriteEvent(pEvent, pEventData, eventDataCount, pActivityId, pRelatedActivityId);
+    EventPipe::WriteEvent(*pEvent, pEventData, eventDataCount, pActivityId, pRelatedActivityId);
 
     END_QCALL;
 }
@@ -237,17 +241,17 @@ bool QCALLTYPE EventPipeInternal::GetNextEvent(UINT64 sessionID, EventPipeEventI
 
     _ASSERTE(pInstance != NULL);
 
-    pNextInstance = EventPipeAdapter::GetNextEvent(sessionID);
+    pNextInstance = EventPipe::GetNextEvent(sessionID);
     if (pNextInstance)
     {
-        pInstance->ProviderID = EventPipeAdapter::GetEventProvider(pNextInstance);
-        pInstance->EventID = EventPipeAdapter::GetEventID(pNextInstance);
-        pInstance->ThreadID = static_cast<uint32_t>(EventPipeAdapter::GetEventThreadID(pNextInstance));
-        pInstance->TimeStamp.QuadPart = EventPipeAdapter::GetEventTimestamp(pNextInstance);
-        pInstance->ActivityId = *EventPipeAdapter::GetEventActivityID(pNextInstance);
-        pInstance->RelatedActivityId = *EventPipeAdapter::GetEventRelativeActivityID(pNextInstance);
-        pInstance->Payload = EventPipeAdapter::GetEventData(pNextInstance);
-        pInstance->PayloadLength = EventPipeAdapter::GetEventDataLen(pNextInstance);
+        pInstance->ProviderID = pNextInstance->GetEvent()->GetProvider();
+        pInstance->EventID = pNextInstance->GetEvent()->GetEventID();
+        pInstance->ThreadID = pNextInstance->GetThreadId32();
+        pInstance->TimeStamp.QuadPart = pNextInstance->GetTimeStamp()->QuadPart;
+        pInstance->ActivityId = *pNextInstance->GetActivityId();
+        pInstance->RelatedActivityId = *pNextInstance->GetRelatedActivityId();
+        pInstance->Payload = pNextInstance->GetData();
+        pInstance->PayloadLength = pNextInstance->GetDataLength();
     }
 
     END_QCALL;
@@ -261,7 +265,7 @@ HANDLE QCALLTYPE EventPipeInternal::GetWaitHandle(UINT64 sessionID)
     HANDLE waitHandle;
     BEGIN_QCALL;
 
-    waitHandle = EventPipeAdapter::GetWaitHandle(sessionID);
+    waitHandle = EventPipe::GetWaitHandle(sessionID);
 
     END_QCALL;
     return waitHandle;

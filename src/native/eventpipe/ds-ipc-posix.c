@@ -1,21 +1,18 @@
-#ifdef FEATURE_PERFTRACING_C_LIB_STANDALONE_PAL
-#define EP_NO_RT_DEPENDENCY
-#endif
-
-#include "ds-rt-config.h"
+#include <config.h>
 
 #ifdef ENABLE_PERFTRACING
 #ifndef HOST_WIN32
+#include "ds-rt-config.h"
+#if !defined(DS_INCLUDE_SOURCE_FILES) || defined(DS_FORCE_INCLUDE_SOURCE_FILES)
 
 #define DS_IMPL_IPC_POSIX_GETTER_SETTER
 #include "ds-ipc-posix.h"
+#include "ds-protocol.h"
+#include "ds-rt.h"
 
-#include <assert.h>
-#include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <errno.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
@@ -25,63 +22,6 @@
 #else
 #include <sys/poll.h>
 #endif // __GNUC__
-
-#ifndef FEATURE_PERFTRACING_C_LIB_STANDALONE_PAL
-#include "ds-rt.h"
-#else
-#ifdef FEATURE_CORECLR
-#include <pal.h>
-#include "processdescriptor.h"
-#endif
-
-#ifndef ep_raise_error_if_nok
-#define ep_raise_error_if_nok(expr) do { if (!(expr)) goto ep_on_error; } while (0)
-#endif
-
-#ifndef ep_raise_error
-#define ep_raise_error() do { goto ep_on_error; } while (0)
-#endif
-
-#ifndef ep_exit_error_handler
-#define ep_exit_error_handler() do { goto ep_on_exit; } while (0)
-#endif
-
-#ifndef EP_ASSERT
-#define EP_ASSERT assert
-#endif
-
-#ifndef DS_ENTER_BLOCKING_PAL_SECTION
-#define DS_ENTER_BLOCKING_PAL_SECTION
-#endif
-
-#ifndef DS_EXIT_BLOCKING_PAL_SECTION
-#define DS_EXIT_BLOCKING_PAL_SECTION
-#endif
-
-#undef ep_rt_object_alloc
-#define ep_rt_object_alloc(obj_type) ((obj_type *)calloc(1, sizeof(obj_type)))
-
-static
-inline
-void
-ep_rt_object_free (void *ptr)
-{
-	if (ptr)
-		free (ptr);
-}
-
-#undef ep_rt_object_array_alloc
-#define ep_rt_object_array_alloc(obj_type,size) ((obj_type *)calloc (size, sizeof(obj_type)))
-
-static
-inline
-void
-ep_rt_object_array_free (void *ptr)
-{
-	if (ptr)
-		free (ptr);
-}
-#endif /* !FEATURE_PERFTRACING_C_LIB_STANDALONE_PAL */
 
 #ifdef __APPLE__
 #define APPLICATION_CONTAINER_BASE_PATH_SUFFIX "/Library/Group Containers/"
@@ -135,12 +75,6 @@ ipc_stream_alloc (
 
 static
 bool
-ipc_transport_get_default_name (
-	ep_char8_t *name,
-	int32_t name_len);
-
-static
-bool
 ipc_init_listener (
 	DiagnosticsIpc *ipc,
 	struct sockaddr *server_address,
@@ -150,37 +84,6 @@ ipc_init_listener (
 /*
  * DiagnosticsIpc.
  */
-
-static
-inline
-bool
-ipc_transport_get_default_name (
-	ep_char8_t *name,
-	int32_t name_len)
-{
-#ifndef FEATURE_PERFTRACING_C_LIB_STANDALONE_PAL
-	return ds_rt_transport_get_default_name (
-		name,
-		name_len,
-		"dotnet-diagnostic",
-		ep_rt_current_process_get_id (),
-		NULL,
-		"socket");
-#elif defined (FEATURE_PERFTRACING_C_LIB_STANDALONE_PAL) && defined (FEATURE_CORECLR)
-	// generate the default socket name in TMP Path
-	const ProcessDescriptor pd = ProcessDescriptor::FromCurrentProcess();
-	PAL_GetTransportName(
-		name_len,
-		name,
-		"dotnet-diagnostic",
-		pd.m_Pid,
-		pd.m_ApplicationGroupId,
-		"socket");
-	return true;
-#else
-	return false;
-#endif
-}
 
 #ifdef __APPLE__
 static
@@ -335,7 +238,7 @@ ds_ipc_alloc (
 	server_address->sun_family = AF_UNIX;
 
 	if (pipe_name) {
-		int32_t result = snprintf (
+		int32_t result = ep_rt_utf8_string_snprintf (
 			server_address->sun_path,
 			sizeof (server_address->sun_path),
 			"%s",
@@ -344,9 +247,13 @@ ds_ipc_alloc (
 			server_address->sun_path [0] = '\0';
 	} else {
 		// generate the default socket name
-		ipc_transport_get_default_name (
+		ds_rt_transport_get_default_name (
 			server_address->sun_path,
-			sizeof (server_address->sun_path));
+			sizeof (server_address->sun_path),
+			"dotnet-diagnostic",
+			ep_rt_current_process_get_id (),
+			NULL,
+			"socket");
 	}
 
 	instance = ep_rt_object_alloc (DiagnosticsIpc);
@@ -377,8 +284,7 @@ ep_on_error:
 void
 ds_ipc_free (DiagnosticsIpc *ipc)
 {
-	if (!ipc)
-		return;
+	ep_return_void_if_nok (ipc != NULL);
 
 	ds_ipc_close (ipc, false, NULL);
 	ep_rt_object_free (ipc->server_address);
@@ -387,30 +293,31 @@ ds_ipc_free (DiagnosticsIpc *ipc)
 
 int32_t
 ds_ipc_poll (
-	DiagnosticsIpcPollHandle *poll_handles_data,
-	size_t poll_handles_data_len,
+	ds_rt_ipc_poll_handle_array_t *poll_handles,
 	uint32_t timeout_ms,
 	ds_ipc_error_callback_func callback)
 {
-	EP_ASSERT (poll_handles_data != NULL);
+	EP_ASSERT (poll_handles);
 
 	int32_t result = -1;
+	DiagnosticsIpcPollHandle * poll_handles_data = ds_rt_ipc_poll_handle_array_data (poll_handles);
+	size_t poll_handles_data_len = ds_rt_ipc_poll_handle_array_size (poll_handles);
 
 	// prepare the pollfd structs
 	struct pollfd *poll_fds = ep_rt_object_array_alloc (struct pollfd, poll_handles_data_len);
 	ep_raise_error_if_nok (poll_fds != NULL);
 
 	for (uint32_t i = 0; i < poll_handles_data_len; ++i) {
-		poll_handles_data [i].events = 0; // ignore any input on events.
+		ds_ipc_poll_handle_set_events (&poll_handles_data [i], 0); // ignore any input on events.
 		int fd = -1;
-		if (poll_handles_data [i].ipc) {
+		if (ds_ipc_poll_handle_get_ipc (&poll_handles_data [i])) {
 			// SERVER
-			EP_ASSERT (poll_handles_data [i].ipc->mode == DS_IPC_CONNECTION_MODE_LISTEN);
-			fd = poll_handles_data [i].ipc->server_socket;
+			EP_ASSERT (ds_ipc_poll_handle_get_ipc (&(poll_handles_data [i]))->mode == DS_IPC_CONNECTION_MODE_LISTEN);
+			fd = ds_ipc_poll_handle_get_ipc (&poll_handles_data [i])->server_socket;
 		} else {
 			// CLIENT
 			EP_ASSERT (poll_handles_data [i].stream != NULL);
-			fd = poll_handles_data [i].stream->client_socket;
+			fd = ds_ipc_poll_handle_get_stream (&poll_handles_data [i])->client_socket;
 		}
 
 		poll_fds [i].fd = fd;
@@ -419,7 +326,7 @@ ds_ipc_poll (
 
 	int result_poll;
 	DS_ENTER_BLOCKING_PAL_SECTION;
-	result_poll = poll (poll_fds, poll_handles_data_len, (int)timeout_ms);
+	result_poll = poll (poll_fds, poll_handles_data_len, timeout_ms);
 	DS_EXIT_BLOCKING_PAL_SECTION;
 
 	// Check results
@@ -445,15 +352,15 @@ ds_ipc_poll (
 				// check for hangup first because a closed socket
 				// will technically meet the requirements for POLLIN
 				// i.e., a call to recv/read won't block
-				poll_handles_data [i].events = (uint8_t)DS_IPC_POLL_EVENTS_HANGUP;
+				ds_ipc_poll_handle_set_events (&poll_handles_data [i], (uint8_t)DS_IPC_POLL_EVENTS_HANGUP);
 			} else if ((poll_fds [i].revents & (POLLERR|POLLNVAL))) {
 				if (callback)
 					callback ("Poll error", (uint32_t)poll_fds [i].revents);
-				poll_handles_data [i].events = (uint8_t)DS_IPC_POLL_EVENTS_ERR;
+				ds_ipc_poll_handle_set_events (&poll_handles_data [i], (uint8_t)DS_IPC_POLL_EVENTS_ERR);
 			} else if (poll_fds [i].revents & (POLLIN|POLLPRI)) {
-				poll_handles_data [i].events = (uint8_t)DS_IPC_POLL_EVENTS_SIGNALED;
+				ds_ipc_poll_handle_set_events (&poll_handles_data [i], (uint8_t)DS_IPC_POLL_EVENTS_SIGNALED);
 			} else {
-				poll_handles_data [i].events = (uint8_t)DS_IPC_POLL_EVENTS_UNKNOWN;
+				ds_ipc_poll_handle_set_events (&poll_handles_data [i], (uint8_t)DS_IPC_POLL_EVENTS_UNKNOWN);
 				if (callback)
 					callback ("unkown poll response", (uint32_t)poll_fds [i].revents);
 			}
@@ -641,8 +548,7 @@ ds_ipc_close (
 	ds_ipc_error_callback_func callback)
 {
 	EP_ASSERT (ipc != NULL);
-	if (ipc->is_closed)
-		return;
+	ep_return_void_if_nok (ipc->is_closed == false);
 
 	ipc->is_closed = true;
 
@@ -689,7 +595,7 @@ ds_ipc_to_string (
 	EP_ASSERT (buffer != NULL);
 	EP_ASSERT (buffer_len <= DS_IPC_MAX_TO_STRING_LEN);
 
-	int32_t result = snprintf (buffer, buffer_len, "{ server_socket = %d }", ipc->server_socket);
+	int32_t result = ep_rt_utf8_string_snprintf (buffer, buffer_len, "{ server_socket = %d }", ipc->server_socket);
 	return (result > 0 && result < (int32_t)buffer_len) ? result : 0;
 }
 
@@ -726,14 +632,14 @@ ipc_stream_read_func (
 	ssize_t total_bytes_read = 0;
 	bool continue_recv = true;
 
-	if (timeout_ms != DS_IPC_TIMEOUT_INFINITE) {
+	if (timeout_ms != DS_IPC_STREAM_TIMEOUT_INFINITE) {
 		struct pollfd pfd;
 		pfd.fd = ipc_stream->client_socket;
 		pfd.events = POLLIN;
 
 		int result_poll;
 		DS_ENTER_BLOCKING_PAL_SECTION;
-		result_poll = poll (&pfd, 1, (int)timeout_ms);
+		result_poll = poll (&pfd, 1, timeout_ms);
 		DS_EXIT_BLOCKING_PAL_SECTION;
 
 		if (result_poll <= 0 || !(pfd.revents & POLLIN)) {
@@ -791,14 +697,14 @@ ipc_stream_write_func (
 	ssize_t total_bytes_written = 0;
 	bool continue_send = true;
 
-	if (timeout_ms != DS_IPC_TIMEOUT_INFINITE) {
+	if (timeout_ms != DS_IPC_STREAM_TIMEOUT_INFINITE) {
 		struct pollfd pfd;
 		pfd.fd = ipc_stream->client_socket;
 		pfd.events = POLLOUT;
 
 		int result_poll;
 		DS_ENTER_BLOCKING_PAL_SECTION;
-		result_poll = poll (&pfd, 1, (int)timeout_ms);
+		result_poll = poll (&pfd, 1, timeout_ms);
 		DS_EXIT_BLOCKING_PAL_SECTION;
 
 		if (result_poll <= 0 || !(pfd.revents & POLLOUT)) {
@@ -869,7 +775,8 @@ ipc_stream_alloc (
 	DiagnosticsIpcStream *instance = ep_rt_object_alloc (DiagnosticsIpcStream);
 	ep_raise_error_if_nok (instance != NULL);
 
-	instance->stream.vtable = &ipc_stream_vtable;
+	ep_raise_error_if_nok (ep_ipc_stream_init (&instance->stream, &ipc_stream_vtable) != NULL);
+
 	instance->client_socket = client_socket;
 	instance->mode = mode;
 
@@ -897,9 +804,7 @@ ds_ipc_stream_get_handle_int32_t (DiagnosticsIpcStream *ipc_stream)
 void
 ds_ipc_stream_free (DiagnosticsIpcStream *ipc_stream)
 {
-	if(!ipc_stream)
-		return;
-
+	ep_return_void_if_nok (ipc_stream != NULL);
 	ds_ipc_stream_close (ipc_stream, NULL);
 	ep_rt_object_free (ipc_stream);
 }
@@ -979,10 +884,11 @@ ds_ipc_stream_to_string (
 	EP_ASSERT (buffer != NULL);
 	EP_ASSERT (buffer_len <= DS_IPC_MAX_TO_STRING_LEN);
 
-	int32_t result = snprintf (buffer, buffer_len, "{ client_socket = %d }", ipc_stream->client_socket);
+	int32_t result = ep_rt_utf8_string_snprintf (buffer, buffer_len, "{ client_socket = %d }", ipc_stream->client_socket);
 	return (result > 0 && result < (int32_t)buffer_len) ? result : 0;
 }
 
+#endif /* !defined(DS_INCLUDE_SOURCE_FILES) || defined(DS_FORCE_INCLUDE_SOURCE_FILES) */
 #endif /* !HOST_WIN32 */
 #endif /* ENABLE_PERFTRACING */
 

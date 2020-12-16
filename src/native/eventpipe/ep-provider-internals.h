@@ -1,9 +1,10 @@
 #ifndef __EVENTPIPE_PROVIDER_INTERNALS_H__
 #define __EVENTPIPE_PROVIDER_INTERNALS_H__
 
-#include "ep-rt-config.h"
+#include <config.h>
 
 #ifdef ENABLE_PERFTRACING
+#include "ep-rt-config.h"
 #include "ep-types.h"
 
 /*

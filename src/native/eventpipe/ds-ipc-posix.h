@@ -1,11 +1,14 @@
 #ifndef __DIAGNOSTICS_IPC_POSIX_H__
 #define __DIAGNOSTICS_IPC_POSIX_H__
 
-#include "ds-rt-config.h"
+#include <config.h>
 
 #ifdef ENABLE_PERFTRACING
 #ifndef HOST_WIN32
-#include "ds-ipc-pal.h"
+#include "ds-rt-config.h"
+#include "ds-types.h"
+#include "ds-ipc.h"
+#include "ep-stream.h"
 
 #undef DS_IMPL_GETTER_SETTER
 #ifdef DS_IMPL_IPC_POSIX_GETTER_SETTER

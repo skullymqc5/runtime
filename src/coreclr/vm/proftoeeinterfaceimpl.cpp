@@ -138,7 +138,11 @@
 #include "metadataexports.h"
 
 #ifdef FEATURE_PERFTRACING
-#include "eventpipeadapter.h"
+#include "eventpipeprovider.h"
+#include "eventpipemetadatagenerator.h"
+#include "eventpipeeventpayload.h"
+#include "eventpipesession.h"
+#include "eventpipesessionprovider.h"
 #endif // FEATURE_PERFTRACING
 
 //---------------------------------------------------------------------------------------
@@ -7049,6 +7053,14 @@ HRESULT ProfToEEInterfaceImpl::EventPipeStartSession(
         "**PROF: EventPipeStartSession.\n"));
 
 #ifdef FEATURE_PERFTRACING
+
+    static_assert(offsetof(EventPipeProviderConfiguration, m_pProviderName) == offsetof(COR_PRF_EVENTPIPE_PROVIDER_CONFIG, providerName)
+                  && offsetof(EventPipeProviderConfiguration, m_keywords) == offsetof(COR_PRF_EVENTPIPE_PROVIDER_CONFIG, keywords)
+                  && offsetof(EventPipeProviderConfiguration, m_loggingLevel) == offsetof(COR_PRF_EVENTPIPE_PROVIDER_CONFIG, loggingLevel)
+                  && offsetof(EventPipeProviderConfiguration, m_pFilterData) == offsetof(COR_PRF_EVENTPIPE_PROVIDER_CONFIG, filterData)
+                  && sizeof(EventPipeProviderConfiguration) == sizeof(COR_PRF_EVENTPIPE_PROVIDER_CONFIG),
+        "Layouts of EventPipeProviderConfiguration type and COR_PRF_EVENTPIPE_PROVIDER_CONFIG type do not match!");
+
     if (cProviderConfigs == 0
         || pProviderConfigs == NULL
         || pSession == NULL)
@@ -7059,18 +7071,19 @@ HRESULT ProfToEEInterfaceImpl::EventPipeStartSession(
     HRESULT hr = S_OK;
     EX_TRY
     {
-        EventPipeProviderConfigurationAdapter providerConfigsAdapter(pProviderConfigs, cProviderConfigs);
-        UINT64 sessionID = EventPipeAdapter::Enable(NULL,
+        EventPipeProviderConfiguration *pProviders = reinterpret_cast<EventPipeProviderConfiguration *>(pProviderConfigs);
+        UINT64 sessionID = EventPipe::Enable(NULL,
                                              0, // We don't use a circular buffer since it's synchronous
-                                             providerConfigsAdapter,
-                                             EP_SESSION_TYPE_SYNCHRONOUS,
-                                             EP_SERIALIZATION_FORMAT_NETTRACE_V4,
+                                             pProviders,
+                                             cProviderConfigs,
+                                             EventPipeSessionType::Synchronous,
+                                             EventPipeSerializationFormat::NetTraceV4,
                                              requestRundown,
                                              NULL,
-                                             reinterpret_cast<EventPipeSessionSynchronousCallback>(&ProfToEEInterfaceImpl::EventPipeCallbackHelper));
+                                             &ProfToEEInterfaceImpl::EventPipeCallbackHelper);
         if (sessionID != 0)
         {
-            EventPipeAdapter::StartStreaming(sessionID);
+            EventPipe::StartStreaming(sessionID);
 
             *pSession = sessionID;
         }
@@ -7115,16 +7128,20 @@ HRESULT ProfToEEInterfaceImpl::EventPipeAddProviderToSession(
     HRESULT hr = S_OK;
     EX_TRY
     {
-        EventPipeSession *pSession = EventPipeAdapter::GetSession(session);
+        EventPipeSession *pSession = EventPipe::GetSession(session);
         if (pSession == NULL)
         {
             hr = E_INVALIDARG;
         }
         else
         {
-            EventPipeProviderConfigurationAdapter adapter(&providerConfig, 1);
-            EventPipeSessionProvider *pProvider = EventPipeAdapter::CreateSessionProvider(adapter);
-            EventPipeAdapter::AddProviderToSession(pProvider, pSession);
+            EventPipeSessionProvider *pProvider = new EventPipeSessionProvider(
+                    providerConfig.providerName,
+                    providerConfig.keywords,
+                    (EventPipeEventLevel)providerConfig.loggingLevel,
+                    providerConfig.filterData);
+
+            EventPipe::AddProviderToSession(pProvider, pSession);
         }
     }
     EX_CATCH_HRESULT(hr);
@@ -7156,7 +7173,7 @@ HRESULT ProfToEEInterfaceImpl::EventPipeStopSession(
     HRESULT hr = S_OK;
     EX_TRY
     {
-        EventPipeAdapter::Disable(session);
+        EventPipe::Disable(session);
     }
     EX_CATCH_HRESULT(hr);
 
@@ -7193,7 +7210,7 @@ HRESULT ProfToEEInterfaceImpl::EventPipeCreateProvider(
     HRESULT hr = S_OK;
     EX_TRY
     {
-        EventPipeProvider *pRealProvider = EventPipeAdapter::CreateProvider(providerName, nullptr);
+        EventPipeProvider *pRealProvider = EventPipe::CreateProvider(providerName, NULL, NULL);
         if (pRealProvider == NULL)
         {
             hr = E_FAIL;
@@ -7247,7 +7264,28 @@ HRESULT ProfToEEInterfaceImpl::EventPipeGetProviderInfo(
     HRESULT hr = S_OK;
     EX_TRY
     {
-        hr = EventPipeAdapter::GetProviderName (pRealProvider, cchName, pcchName, szName);
+        const SString &providerName = pRealProvider->GetProviderName();
+        ULONG numChars = providerName.GetCount() + 1;
+        if (pcchName != NULL)
+        {
+            *pcchName = numChars;
+        }
+
+        if (numChars >= cchName)
+        {
+            hr = HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
+        }
+        else
+        {
+            size_t pos = 0;
+            for (SString::CIterator it = providerName.Begin(); it != providerName.End(); ++it)
+            {
+                szName[pos] = *it;
+                ++pos;
+            }
+
+            szName[pos] = '\0';
+        }
     }
     EX_CATCH_HRESULT(hr);
 
@@ -7298,7 +7336,7 @@ HRESULT ProfToEEInterfaceImpl::EventPipeDefineEvent(
 
     for (UINT32 i = 0; i < cParamDescs; ++i)
     {
-        if ((EventPipeParameterType)(pParamDescs[i].type) == EP_PARAMETER_TYPE_OBJECT)
+        if ((EventPipeParameterType)(pParamDescs[i].type) == EventPipeParameterType::Object)
         {
             // The native EventPipeMetadataGenerator only knows how to encode
             // primitive types, it would not handle Object correctly
@@ -7309,17 +7347,35 @@ HRESULT ProfToEEInterfaceImpl::EventPipeDefineEvent(
     HRESULT hr = S_OK;
     EX_TRY
     {
-        EventPipeParameterDescAdapter adapter(pParamDescs, cParamDescs);
-        EventPipeEvent *pRealEvent = EventPipeAdapter::AddEvent(
-            pProvider,
+        static_assert(offsetof(EventPipeParameterDesc, Type) == offsetof(COR_PRF_EVENTPIPE_PARAM_DESC, type)
+                      && offsetof(EventPipeParameterDesc, ElementType) == offsetof(COR_PRF_EVENTPIPE_PARAM_DESC, elementType)
+                      && offsetof(EventPipeParameterDesc, Name) == offsetof(COR_PRF_EVENTPIPE_PARAM_DESC, name)
+                      && sizeof(EventPipeParameterDesc) == sizeof(COR_PRF_EVENTPIPE_PARAM_DESC),
+            "Layouts of EventPipeParameterDesc type and COR_PRF_EVENTPIPE_PARAM_DESC type do not match!");
+        EventPipeParameterDesc *params = reinterpret_cast<EventPipeParameterDesc *>(pParamDescs);
+
+        size_t metadataLength;
+        NewArrayHolder<BYTE> pMetadata = EventPipeMetadataGenerator::GenerateEventMetadata(
             eventID,
             eventName,
             keywords,
             eventVersion,
             (EventPipeEventLevel)level,
             opcode,
-            adapter,
-            needStack);
+            params,
+            cParamDescs,
+            &metadataLength);
+
+        // Add the event.
+        EventPipeEvent *pRealEvent = pProvider->AddEvent(
+            eventID,
+            keywords,
+            eventVersion,
+            (EventPipeEventLevel)level,
+            needStack,
+            pMetadata,
+            (unsigned int)metadataLength);
+
         *pEvent = reinterpret_cast<EVENTPIPE_EVENT>(pRealEvent);
     }
     EX_CATCH_HRESULT(hr);
@@ -7358,8 +7414,13 @@ HRESULT ProfToEEInterfaceImpl::EventPipeWriteEvent(
         return E_INVALIDARG;
     }
 
-    EventDataAdapter adapter(data, cData);
-    EventPipeAdapter::WriteEvent(pEvent, adapter, pActivityId, pRelatedActivityId);
+    static_assert(offsetof(EventData, Ptr) == offsetof(COR_PRF_EVENT_DATA, ptr)
+                    && offsetof(EventData, Size) == offsetof(COR_PRF_EVENT_DATA, size)
+                    && sizeof(EventData) == sizeof(COR_PRF_EVENT_DATA),
+        "Layouts of EventData type and COR_PRF_EVENT_DATA type do not match!");
+
+    EventData *pEventData = reinterpret_cast<EventData *>(data);
+    EventPipe::WriteEvent(*pEvent, pEventData, cData, pActivityId, pRelatedActivityId);
 
     return S_OK;
 #else // FEATURE_PERFTRACING

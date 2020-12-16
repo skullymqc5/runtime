@@ -47,7 +47,7 @@ public:
         __in_z LPCWSTR outputFile,
         EventPipeSerializationFormat format,
         UINT32 circularBufferSizeInMB,
-        /* COR_PRF_EVENTPIPE_PROVIDER_CONFIG */ LPCVOID pProviders,
+        EventPipeProviderConfiguration *pProviders,
         UINT32 numProviders);
 
     //!

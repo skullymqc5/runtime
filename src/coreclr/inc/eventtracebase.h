@@ -542,9 +542,7 @@ public:
 
 #if defined(FEATURE_EVENT_TRACE)
 
-#ifdef FEATURE_PERFTRACING
-#include "../vm/eventpipeadaptertypes.h"
-#endif // FEATURE_PERFTRACING
+struct EventFilterDescriptor;
 
 VOID EventPipeEtwCallbackDotNETRuntimeStress(
     _In_ LPCGUID SourceId,

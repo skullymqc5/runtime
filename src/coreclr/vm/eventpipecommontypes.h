@@ -22,7 +22,7 @@ enum class EventPipeEventLevel
 
 struct EventPipeProviderConfiguration
 {
-    friend class EventPipeProviderConfigurationAdapter;
+    friend class ProfToEEInterfaceImpl;
 
 private:
     LPCWSTR m_pProviderName = nullptr;

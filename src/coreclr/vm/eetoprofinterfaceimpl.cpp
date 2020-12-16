@@ -78,7 +78,7 @@
 #include "eeconfig.h"
 
 #ifdef FEATURE_PERFTRACING
-#include "eventpipeadapter.h"
+#include "eventpipeprovider.h"
 #endif // FEATURE_PERFTRACING
 
 //---------------------------------------------------------------------------------------

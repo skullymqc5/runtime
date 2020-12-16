@@ -1,6 +1,7 @@
-#include "ep-rt-config.h"
+#include <config.h>
 
 #ifdef ENABLE_PERFTRACING
+#include "ep-rt-config.h"
 #if !defined(EP_INCLUDE_SOURCE_FILES) || defined(EP_FORCE_INCLUDE_SOURCE_FILES)
 
 #define EP_IMPL_JSON_FILE_GETTER_SETTER
@@ -8,14 +9,7 @@
 #include "ep.h"
 #include "ep-event-instance.h"
 #include "ep-rt.h"
-
-#ifdef HAVE_INTTYPES_H
 #include <inttypes.h>
-#else
-#ifndef PRIu64
-#define PRIu64 "llu"
-#endif
-#endif
 
 #ifdef EP_CHECKED_BUILD
 
@@ -112,7 +106,7 @@ ep_json_file_write_event_data (
 	int32_t characters_written = -1;
 
 	characters_written = ep_rt_utf8_string_snprintf (buffer, EP_ARRAY_SIZE (buffer), "{\"Time\" : \"%f\", \"Metric\" : \"1\",\n\"Stack\": [\n\"", millis_since_trace_start);
-	if (characters_written > 0 && characters_written < (int32_t)EP_ARRAY_SIZE (buffer))
+	if (characters_written > 0 && characters_written < EP_ARRAY_SIZE (buffer))
 		json_file_write_string (json_file, buffer);
 
 	if (message)
@@ -137,12 +131,12 @@ ep_json_file_write_event_data (
 		}
 
 		characters_written = ep_rt_utf8_string_snprintf (buffer, EP_ARRAY_SIZE (buffer), "\"%s!%s\",\n", assembly_name, method_name);
-		if (characters_written > 0 && characters_written < (int32_t)EP_ARRAY_SIZE (buffer))
+		if (characters_written > 0 && characters_written < EP_ARRAY_SIZE (buffer))
 			json_file_write_string (json_file, buffer);
 	}
 
 	characters_written = ep_rt_utf8_string_snprintf (buffer, EP_ARRAY_SIZE (buffer), "\"Thread (%" PRIu64 ")\"]},", ep_rt_thread_id_t_to_uint64_t (thread_id));
-	if (characters_written > 0 && characters_written < (int32_t)EP_ARRAY_SIZE (buffer))
+	if (characters_written > 0 && characters_written < EP_ARRAY_SIZE (buffer))
 		json_file_write_string (json_file, buffer);
 }
 

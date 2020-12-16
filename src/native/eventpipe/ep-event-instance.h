@@ -1,9 +1,10 @@
 #ifndef __EVENTPIPE_EVENT_INSTANCE_H__
 #define __EVENTPIPE_EVENT_INSTANCE_H__
 
-#include "ep-rt-config.h"
+#include <config.h>
 
 #ifdef ENABLE_PERFTRACING
+#include "ep-rt-config.h"
 #include "ep-types.h"
 #include "ep-stack-contents.h"
 

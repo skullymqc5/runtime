@@ -1,7 +1,9 @@
 #ifndef __EVENTPIPE_SESSION_PROVIDER_H__
 #define __EVENTPIPE_SESSION_PROVIDER_H__
 
-#if defined(ENABLE_PERFTRACING) || defined(FEATURE_PERFTRACING)
+#include <config.h>
+
+#ifdef ENABLE_PERFTRACING
 #include "ep-rt-config.h"
 #include "ep-types.h"
 
@@ -87,5 +89,5 @@ ep_session_provider_list_add_session_provider (
 	EventPipeSessionProviderList *session_provider_list,
 	EventPipeSessionProvider *session_provider);
 
-#endif /* defined(ENABLE_PERFTRACING) || defined(FEATURE_PERFTRACING) */
+#endif /* ENABLE_PERFTRACING */
 #endif /** __EVENTPIPE_SESSION_PROVIDER_H__ **/

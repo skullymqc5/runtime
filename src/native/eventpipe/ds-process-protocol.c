@@ -1,6 +1,7 @@
-#include "ds-rt-config.h"
+#include <config.h>
 
 #ifdef ENABLE_PERFTRACING
+#include "ds-rt-config.h"
 #if !defined(DS_INCLUDE_SOURCE_FILES) || defined(DS_FORCE_INCLUDE_SOURCE_FILES)
 
 #define DS_IMPL_PROCESS_PROTOCOL_GETTER_SETTER

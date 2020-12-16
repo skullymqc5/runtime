@@ -1,58 +1,14 @@
-#ifdef FEATURE_PERFTRACING_C_LIB_STANDALONE_PAL
-#define EP_NO_RT_DEPENDENCY
-#endif
-
-#include "ds-rt-config.h"
+#include <config.h>
 
 #ifdef ENABLE_PERFTRACING
 #ifdef HOST_WIN32
+#include "ds-rt-config.h"
+#if !defined(DS_INCLUDE_SOURCE_FILES) || defined(DS_FORCE_INCLUDE_SOURCE_FILES)
 
 #define DS_IMPL_IPC_WIN32_GETTER_SETTER
 #include "ds-ipc-win32.h"
-
-#include <assert.h>
-#include <stdlib.h>
-#include <stdio.h>
-
-#ifndef FEATURE_PERFTRACING_C_LIB_STANDALONE_PAL
+#include "ds-protocol.h"
 #include "ds-rt.h"
-#else
-#ifndef ep_raise_error_if_nok
-#define ep_raise_error_if_nok(expr) do { if (!(expr)) goto ep_on_error; } while (0)
-#endif
-
-#ifndef ep_raise_error
-#define ep_raise_error() do { goto ep_on_error; } while (0)
-#endif
-
-#ifndef ep_exit_error_handler
-#define ep_exit_error_handler() do { goto ep_on_exit; } while (0)
-#endif
-
-#ifndef EP_ASSERT
-#define EP_ASSERT assert
-#endif
-
-#ifndef DS_ENTER_BLOCKING_PAL_SECTION
-#define DS_ENTER_BLOCKING_PAL_SECTION
-#endif
-
-#ifndef DS_EXIT_BLOCKING_PAL_SECTION
-#define DS_EXIT_BLOCKING_PAL_SECTION
-#endif
-
-#undef ep_rt_object_alloc
-#define ep_rt_object_alloc(obj_type) ((obj_type *)calloc(1, sizeof(obj_type)))
-
-static
-inline
-void
-ep_rt_object_free (void *ptr)
-{
-	if (ptr)
-		free (ptr);
-}
-#endif /* !FEATURE_PERFTRACING_C_LIB_STANDALONE_PAL */
 
 /*
  * Forward declares of all static functions.
@@ -119,17 +75,17 @@ ds_ipc_alloc (
 	instance->pipe = INVALID_HANDLE_VALUE;
 
 	if (pipe_name) {
-		characters_written = sprintf_s (
-			(char *)&instance->pipe_name,
-			(size_t)DS_IPC_WIN32_MAX_NAMED_PIPE_LEN,
-			(const char *)"\\\\.\\pipe\\%s",
+		characters_written = ep_rt_utf8_string_snprintf (
+			&instance->pipe_name,
+			DS_IPC_WIN32_MAX_NAMED_PIPE_LEN,
+			"\\\\.\\pipe\\%s",
 			pipe_name);
 	} else {
-		characters_written = sprintf_s (
-			(char *)&instance->pipe_name,
-			(size_t)DS_IPC_WIN32_MAX_NAMED_PIPE_LEN,
-			(const char *)"\\\\.\\pipe\\dotnet-diagnostic-%d",
-			GetCurrentProcessId ());
+		characters_written = ep_rt_utf8_string_snprintf (
+			&instance->pipe_name,
+			DS_IPC_WIN32_MAX_NAMED_PIPE_LEN,
+			"\\\\.\\pipe\\dotnet-diagnostic-%d",
+			ep_rt_current_process_get_id ());
 	}
 
 	if (characters_written <= 0 || characters_written >= DS_IPC_WIN32_MAX_NAMED_PIPE_LEN) {
@@ -150,8 +106,7 @@ ep_on_error:
 void
 ds_ipc_free (DiagnosticsIpc *ipc)
 {
-	if (!ipc)
-		return;
+	ep_return_void_if_nok (ipc != NULL);
 
 	ds_ipc_close (ipc, false, NULL);
 	ep_rt_object_free (ipc);
@@ -159,47 +114,49 @@ ds_ipc_free (DiagnosticsIpc *ipc)
 
 int32_t
 ds_ipc_poll (
-	DiagnosticsIpcPollHandle *poll_handles_data,
-	size_t poll_handles_data_len,
+	ds_rt_ipc_poll_handle_array_t *poll_handles,
 	uint32_t timeout_ms,
 	ds_ipc_error_callback_func callback)
 {
-	EP_ASSERT (poll_handles_data != NULL);
+	EP_ASSERT (poll_handles);
 
 	int32_t result = 1;
+	DiagnosticsIpcPollHandle * poll_handles_data = ds_rt_ipc_poll_handle_array_data (poll_handles);
+	size_t poll_handles_data_len = ds_rt_ipc_poll_handle_array_size (poll_handles);
+
 	EP_ASSERT (poll_handles_data_len <= MAXIMUM_WAIT_OBJECTS);
 
 	HANDLE handles [MAXIMUM_WAIT_OBJECTS];
 	for (size_t i = 0; i < poll_handles_data_len; ++i) {
-		poll_handles_data [i].events = 0; // ignore any input on events.
-		if (poll_handles_data [i].ipc) {
+		ds_ipc_poll_handle_set_events (&poll_handles_data [i], 0); // ignore any input on events.
+		if (ds_ipc_poll_handle_get_ipc (&poll_handles_data [i])) {
 			// SERVER
-			EP_ASSERT (poll_handles_data [i].ipc->mode == DS_IPC_CONNECTION_MODE_LISTEN);
-			handles [i] = poll_handles_data [i].ipc->overlap.hEvent;
+			EP_ASSERT (ds_ipc_poll_handle_get_ipc (&(poll_handles_data [i]))->mode == DS_IPC_CONNECTION_MODE_LISTEN);
+			handles [i] = ds_ipc_poll_handle_get_ipc (&poll_handles_data [i])->overlap.hEvent;
 		} else {
 			// CLIENT
 			bool success = true;
 			DWORD bytes_read = 1;
-			if (!poll_handles_data [i].stream->is_test_reading) {
+			if (!ds_ipc_poll_handle_get_stream (&poll_handles_data [i])->is_test_reading) {
 				// check for data by doing an asynchronous 0 byte read.
 				// This will signal if the pipe closes (hangup) or the server
 				// sends new data
 				success = ReadFile (
-					poll_handles_data [i].stream->pipe,                                   // handle
+					ds_ipc_poll_handle_get_stream (&poll_handles_data [i])->pipe,         // handle
 					NULL,                                                                 // null buffer
 					0,                                                                    // read 0 bytesd
 					&bytes_read,                                                          // dummy variable
-					&poll_handles_data [i].stream->overlap);    // overlap object to use
+					&ds_ipc_poll_handle_get_stream (&poll_handles_data [i])->overlap);    // overlap object to use
 
-				poll_handles_data [i].stream->is_test_reading = true;
+				ds_ipc_poll_handle_get_stream (&poll_handles_data [i])->is_test_reading = true;
 				if (!success) {
 					DWORD error = GetLastError ();
 					switch (error) {
 					case ERROR_IO_PENDING:
-						handles [i] = poll_handles_data [i].stream->overlap.hEvent;
+						handles [i] = ds_ipc_poll_handle_get_stream (&poll_handles_data [i])->overlap.hEvent;
 						break;
 					case ERROR_PIPE_NOT_CONNECTED:
-						poll_handles_data [i].events = (uint8_t)DS_IPC_POLL_EVENTS_HANGUP;
+						ds_ipc_poll_handle_set_events (&poll_handles_data [i], (uint8_t)DS_IPC_POLL_EVENTS_HANGUP);
 						result = -1;
 						ep_raise_error ();
 					default:
@@ -210,10 +167,10 @@ ds_ipc_poll (
 					}
 				} else {
 					// there's already data to be read
-					handles [i] = poll_handles_data [i].stream->overlap.hEvent;
+					handles [i] = ds_ipc_poll_handle_get_stream (&poll_handles_data [i])->overlap.hEvent;
 				}
 			} else {
-				handles [i] = poll_handles_data [i].stream->overlap.hEvent;
+				handles [i] = ds_ipc_poll_handle_get_stream (&poll_handles_data [i])->overlap.hEvent;
 			}
 		}
 	}
@@ -225,7 +182,7 @@ ds_ipc_poll (
 		(DWORD)poll_handles_data_len,      // count
 		handles,                           // handles
 		false,                             // don't wait all
-		(DWORD)timeout_ms);
+		timeout_ms);
 	DS_EXIT_BLOCKING_PAL_SECTION;
 
 	if (wait == WAIT_TIMEOUT) {
@@ -249,7 +206,7 @@ ds_ipc_poll (
 		// check if we abandoned something
 		DWORD abandonedIndex = wait - WAIT_ABANDONED_0;
 		if (abandonedIndex > 0 || abandonedIndex < (poll_handles_data_len - 1)) {
-			poll_handles_data [abandonedIndex].events = (uint8_t)DS_IPC_POLL_EVENTS_HANGUP;
+			ds_ipc_poll_handle_set_events( &poll_handles_data [abandonedIndex], (uint8_t)DS_IPC_POLL_EVENTS_HANGUP);
 			result = -1;
 			ep_raise_error ();
 		} else {
@@ -261,14 +218,14 @@ ds_ipc_poll (
 	}
 
 	// Set revents depending on what signaled the stream
-	if (!poll_handles_data [index].ipc) {
+	if (!ds_ipc_poll_handle_get_ipc (&poll_handles_data [index])) {
 		// CLIENT
 		// check if the connection got hung up
 		// Start with quick none blocking completion check.
 		DWORD dummy = 0;
 		BOOL success = GetOverlappedResult(
-			poll_handles_data [index].stream->pipe,
-			&poll_handles_data [index].stream->overlap,
+			ds_ipc_poll_handle_get_stream(&poll_handles_data [index])->pipe,
+			&ds_ipc_poll_handle_get_stream(&poll_handles_data [index])->overlap,
 			&dummy,
 			false);
 		if (!success && GetLastError () == ERROR_IO_INCOMPLETE) {
@@ -276,30 +233,30 @@ ds_ipc_poll (
 			dummy = 0;
 			DS_ENTER_BLOCKING_PAL_SECTION;
 			success = GetOverlappedResult(
-				poll_handles_data [index].stream->pipe,
-				&poll_handles_data [index].stream->overlap,
+				ds_ipc_poll_handle_get_stream(&poll_handles_data [index])->pipe,
+				&ds_ipc_poll_handle_get_stream(&poll_handles_data [index])->overlap,
 				&dummy,
 				true);
 			DS_EXIT_BLOCKING_PAL_SECTION;
 		}
-		poll_handles_data [index].stream->is_test_reading = false;
+		ds_ipc_poll_handle_get_stream(&poll_handles_data [index])->is_test_reading = false;
 		if (!success) {
 			DWORD error = GetLastError();
 			if (error == ERROR_PIPE_NOT_CONNECTED || error == ERROR_BROKEN_PIPE) {
-				poll_handles_data [index].events = (uint8_t)DS_IPC_POLL_EVENTS_HANGUP;
+				ds_ipc_poll_handle_set_events(&poll_handles_data [index], (uint8_t)DS_IPC_POLL_EVENTS_HANGUP);
 			} else {
 				if (callback)
 					callback ("Client connection error", error);
-				poll_handles_data [index].events = (uint8_t)DS_IPC_POLL_EVENTS_ERR;
+				ds_ipc_poll_handle_set_events (&poll_handles_data [index], (uint8_t)DS_IPC_POLL_EVENTS_ERR);
 				result = -1;
 				ep_raise_error ();
 			}
 		} else {
-			poll_handles_data [index].events = (uint8_t)DS_IPC_POLL_EVENTS_SIGNALED;
+			ds_ipc_poll_handle_set_events (&poll_handles_data [index], (uint8_t)DS_IPC_POLL_EVENTS_SIGNALED);
 		}
 	} else {
 		// SERVER
-		poll_handles_data [index].events = (uint8_t)DS_IPC_POLL_EVENTS_SIGNALED;
+		ds_ipc_poll_handle_set_events (&poll_handles_data [index], (uint8_t)DS_IPC_POLL_EVENTS_SIGNALED);
 	}
 
 	result = 1;
@@ -556,7 +513,7 @@ ds_ipc_to_string (
 	EP_ASSERT (ipc != NULL);
 	EP_ASSERT (buffer != NULL);
 	EP_ASSERT (buffer_len <= DS_IPC_MAX_TO_STRING_LEN);
-	int32_t result = sprintf_s (buffer, buffer_len, "{ _hPipe = %d, _oOverlap.hEvent = %d }", (int32_t)(size_t)ipc->pipe, (int32_t)(size_t)ipc->overlap.hEvent);
+	int32_t result = ep_rt_utf8_string_snprintf (buffer, buffer_len, "{ _hPipe = %d, _oOverlap.hEvent = %d }", (int32_t)(size_t)ipc->pipe, (int32_t)(size_t)ipc->overlap.hEvent);
 	return (result > 0 && result < (int32_t)buffer_len) ? result : 0;
 }
 
@@ -601,7 +558,7 @@ ipc_stream_read_func (
 		DWORD error = GetLastError ();
 		if (error == ERROR_IO_PENDING) {
 			// if we're waiting infinitely, only make one syscall
-			if (timeout_ms == DS_IPC_TIMEOUT_INFINITE) {
+			if (timeout_ms == DS_IPC_WIN32_INFINITE_TIMEOUT) {
 				DS_ENTER_BLOCKING_PAL_SECTION;
 				success = GetOverlappedResult (
 					ipc_stream->pipe,   // pipe
@@ -671,7 +628,7 @@ ipc_stream_write_func (
 		DWORD error = GetLastError ();
 		if (error == ERROR_IO_PENDING) {
 			// if we're waiting infinitely, only make one syscall
-			if (timeout_ms == DS_IPC_TIMEOUT_INFINITE) {
+			if (timeout_ms == DS_IPC_WIN32_INFINITE_TIMEOUT) {
 				DS_ENTER_BLOCKING_PAL_SECTION;
 				success = GetOverlappedResult (
 					ipc_stream->pipe,   // pipe
@@ -755,7 +712,8 @@ ipc_stream_alloc (
 	DiagnosticsIpcStream *instance = ep_rt_object_alloc (DiagnosticsIpcStream);
 	ep_raise_error_if_nok (instance != NULL);
 
-	instance->stream.vtable = &ipc_stream_vtable;
+	ep_raise_error_if_nok (ep_ipc_stream_init (&instance->stream, &ipc_stream_vtable) != NULL);
+
 	instance->pipe = pipe;
 	instance->mode = mode;
 
@@ -788,9 +746,7 @@ ds_ipc_stream_get_stream_ref (DiagnosticsIpcStream *ipc_stream)
 void
 ds_ipc_stream_free (DiagnosticsIpcStream *ipc_stream)
 {
-	if (!ipc_stream)
-		return;
-
+	ep_return_void_if_nok (ipc_stream != NULL);
 	ds_ipc_stream_close (ipc_stream, NULL);
 	ep_rt_object_free (ipc_stream);
 }
@@ -879,9 +835,11 @@ ds_ipc_stream_to_string (
 	EP_ASSERT (ipc_stream != NULL);
 	EP_ASSERT (buffer != NULL);
 	EP_ASSERT (buffer_len <= DS_IPC_MAX_TO_STRING_LEN);
-	int32_t result = sprintf_s (buffer, buffer_len, "{ _hPipe = %d, _oOverlap.hEvent = %d }", (int32_t)(size_t)ipc_stream->pipe, (int32_t)(size_t)ipc_stream->overlap.hEvent);
+	int32_t result = ep_rt_utf8_string_snprintf (buffer, buffer_len, "{ _hPipe = %d, _oOverlap.hEvent = %d }", (int32_t)(size_t)ipc_stream->pipe, (int32_t)(size_t)ipc_stream->overlap.hEvent);
 	return (result > 0 && result < (int32_t)buffer_len) ? result : 0;
 }
+
+#endif /* !defined(DS_INCLUDE_SOURCE_FILES) || defined(DS_FORCE_INCLUDE_SOURCE_FILES) */
 #endif /* HOST_WIN32 */
 #endif /* ENABLE_PERFTRACING */
 

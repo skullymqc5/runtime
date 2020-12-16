@@ -8,7 +8,6 @@
 #include "threadsuspend.h"
 #include "jithost.h"
 #include "genanalysis.h"
-#include "eventpipeadapter.h"
 
 #ifdef FEATURE_COMINTEROP
 #include "runtimecallablewrapper.h"
@@ -268,7 +267,7 @@ VOID FinalizerThread::FinalizerThreadWorker(void *args)
         if (gcGenAnalysisState == GcGenAnalysisState::Done)
         {
             gcGenAnalysisState = GcGenAnalysisState::Disabled;
-            EventPipeAdapter::Disable(gcGenAnalysisEventPipeSessionId);
+            EventPipe::Disable(gcGenAnalysisEventPipeSessionId);
             // Writing an empty file to indicate completion
             fclose(fopen(GENAWARE_COMPLETION_FILE_NAME,"w+"));
 #ifdef GEN_ANALYSIS_STRESS

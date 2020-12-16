@@ -1,6 +1,7 @@
-#include "ep-rt-config.h"
+#include <config.h>
 
 #ifdef ENABLE_PERFTRACING
+#include "ep-rt-config.h"
 
 // Option to include all internal source files into ep.c.
 #ifdef EP_INCLUDE_SOURCE_FILES
@@ -593,8 +594,7 @@ disable_helper (EventPipeSessionID id)
 		EventPipeProviderCallbackDataQueue *provider_callback_data_queue = ep_provider_callback_data_queue_init (&callback_data_queue);
 
 		EP_LOCK_ENTER (section1)
-			if (ep_volatile_load_number_of_sessions () > 0)
-				disable_holding_lock (id, provider_callback_data_queue);
+			disable_holding_lock (id, provider_callback_data_queue);
 		EP_LOCK_EXIT (section1)
 
 		while (ep_provider_callback_data_queue_try_dequeue (provider_callback_data_queue, &provider_callback_data)) {

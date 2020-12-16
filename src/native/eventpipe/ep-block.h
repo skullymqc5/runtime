@@ -1,9 +1,10 @@
 #ifndef __EVENTPIPE_BLOCK_H__
 #define __EVENTPIPE_BLOCK_H__
 
-#include "ep-rt-config.h"
+#include <config.h>
 
 #ifdef ENABLE_PERFTRACING
+#include "ep-rt-config.h"
 #include "ep-types.h"
 #include "ep-stream.h"
 
